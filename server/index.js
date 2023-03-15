@@ -1,103 +1,110 @@
 import  express  from "express";
-import cors from "cors";
-import jwt from "jsonwebtoken";
 import multer from "multer";
+import cors from "cors";
 import bodyParser from "body-parser";
-import fs from "fs";
 import path from "path";
+import fs from "fs";
+import { OAuth2Client } from "google-auth-library";
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
-
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(cors());
 
-const JWT_SECRET = 'my_secret_key';
+const CLIENT_ID = '467303493899-gaesmk5jhp5aqbd9mtsfv4mpm9unu8cb.apps.googleusercontent.com';
+const client = new OAuth2Client(CLIENT_ID);
 
-// Endpoint to handle user authentication
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-
-
-  const userId = 1;
-
-  // Create a JWT token with the user ID
-  const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '1h' });
-
-  res.json({ token });
-});
-
-// Endpoint to handle file uploads
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  const { authorization } = req.headers;
-
-  if (!authorization) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const token = authorization.split(' ')[1];
-
+app.post("/api/login", async (req, res) => {
   try {
-    // Verify the JWT token to check if the user is authenticated
-    const { userId } = jwt.verify(token, JWT_SECRET);
-
-    // Move the uploaded file to a new directory and rename it with the user ID
-    const oldPath = req.file.path;
-    const newPath = `uploads/${userId}-${req.file.originalname}`;
-    fs.renameSync(oldPath, newPath);
-
-    res.json({ success: true });
+    const { id_token } = req.body;
+    const ticket = await client.verifyIdToken({
+      idToken: id_token,
+      audience: CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    const user = {
+      name: payload.name,
+      email: payload.email,
+      picture: payload.picture,
+    };
+    console.log(user);
+    res.json({ success: true, email: user.email });
   } catch (error) {
     console.error(error);
-    res.status(403).json({ error: 'Forbidden' });
+    res.status(401).json({ success: false, message: "Failed to authenticate user." });
   }
 });
 
-// Endpoint to handle file list retrieval
-app.get('/api/list', (req, res) => {
-  const { authorization } = req.headers;
-
-  if (!authorization) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const token = authorization.split(' ')[1];
-
-  try {
-    // Verify the JWT token to check if the user is authenticated
-    const { userId } = jwt.verify(token, JWT_SECRET);
-
-    // Read the files in the uploads directory and filter by the user ID
-    const files = fs.readdirSync('uploads/');
-    const userFiles = files.filter((file) => file.startsWith(`${userId}-`));
-
-    res.json(userFiles);
-  } catch (error) {
-    console.error(error);
-    res.status(403).json({ error: 'Forbidden' });
-  }
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads");
+  },
+  filename: (req, file, cb) => {
+    const fileName = `${Date.now()}-${file.originalname}`;
+    cb(null, fileName);
+  },
 });
 
-app.get("/api/list/:filename", (req, res) => {
-  const{ authorization } = req.headers;
-  if(!authorization)
-  {
-    return res.status(401).json({error:'Unauthorized'});
+const upload = multer({ storage: storage });
+
+
+app.post("/api/upload", upload.single("file"), (req, res) => {
+  const { user } = req.body;
+  const fileName = `${user}-${Date.now()}-${req.file.originalname}`;
+  const filePath = path.join(__dirname, "uploads", fileName);
+  fs.rename(req.file.path, filePath, (err) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    } else {
+      console.log(`File ${req.file.filename} uploaded by user ${user}`);
+      res.send();
+    }
+  });
+});
+
+
+app.get("/api/files", (req, res) => {
+  const directoryPath = path.join(__dirname, "uploads");
+  fs.readdir(directoryPath, (err, files) => {
+    if (err) {
+      return res.status(500).send(err);
+    }
+    const fileData = files.map((filename) => {
+      const uploader = filename.split("-")[0];
+      return { filename, uploader };
+    });
+    res.send(fileData);
+  });
+});
+
+
+app.get("/api/files/:filename", (req, res) => {
+  const { filename } = req.params;
+  const { email } = req.query; // get email from query parameter
+  const filePath = path.join(__dirname, "uploads", filename);
+  
+  // Check if the user is authorized to download the file
+  if (email !== req.query.user) {
+    return res.status(403).send("You are not authorized to download this file.");
   }
 
-  const token = authorization.split(' ')[1];
-  try {
-    const { userId } = jwt.verify(token,JWT_SECRET);
-
-  const filePath = path.join(__dirname, "uploads/", req.params.filename);
-  res.json(filePath);
-  } catch (error) {
-    console.error(error);
-    res.status(403).json({error : 'Forbidden'});
-  }
+  res.download(filePath, (err) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    }
+  });
   
 });
 
-app.listen(3001, () => {
-  console.log('Server listening on port 3001');
-});
+
+
+app.listen(5000, () => {
+  console.log("Server started on port 5000");
+}); 
